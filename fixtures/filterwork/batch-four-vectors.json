@@ -1,0 +1,11 @@
+{
+  "file_id": "batch-four-vectors",
+  "writer_version": "fw-w1",
+  "reader_version": "fw-r1",
+  "rows": [
+    {"row_id": "r1", "revision": 1, "values": {"x": 1, "y": 1}},
+    {"row_id": "r2", "revision": 1, "values": {"x": 1, "y": 2}},
+    {"row_id": "r3", "revision": 1, "values": {"x": 2, "y": 1}},
+    {"row_id": "r4", "revision": 1, "values": {"x": 2, "y": 2}}
+  ]
+}

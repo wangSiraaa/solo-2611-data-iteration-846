@@ -1,0 +1,8 @@
+{
+  "predicate_id": "p-lt-isnull",
+  "atoms": [
+    {"atom_id": "L", "field_id": "x", "op": "lt", "threshold": 10},
+    {"atom_id": "N", "field_id": "y", "op": "is_null"}
+  ],
+  "expression": {"or": ["L", {"not": "N"}]}
+}

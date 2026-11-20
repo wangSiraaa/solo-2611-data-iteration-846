@@ -265,6 +265,83 @@ No arbitrary type inference, no Arrow Union, no online database migration.
 
 ---
 
+## 4. Per-column billed filter work orders (`extcontract/predicate.py`, `workorder.py`, `replay.py`)
+
+The archive bills a cold-column read **per atom retrieval**. On top of the unchanged
+adaptation entry point, three new artifacts plan and execute a filter whose only
+runtime cost is the set of atoms it actually reads.
+
+### Three-valued predicates (`filter-predicate` documents)
+
+Atoms bind to reader columns by `field_id` (one atom per column) and are limited to:
+
+| Atom | Meaning | On `null` |
+|------|---------|-----------|
+| `eq` | value equals a same-typed constant | **U** (unknown) |
+| `lt` | numeric value strictly below an exact threshold | **U** |
+| `is_null` | value is null | always a definite **T** / **F**, never U |
+
+Expressions contain only atom references and `and` / `or` / `not`, combined with
+Kleene three-valued logic. `F` and `U` are kept distinct at every level; only a
+definite `T` delivers a row. Constants are validated against the reader field type
+(INT integer, DECIMAL exact fraction string, TEXT string); `null` is never a literal.
+At most 8 atoms per predicate.
+
+### Joint statistics (`filter-statistics/v1`)
+
+`build_joint_statistics` evaluates the whole fixed, closed batch once and lists the
+**joint** truth vectors that actually occur, each with its row count and the
+traceable input `row_id`s. Per-column marginals are never produced or multiplied: the
+co-occurrence of `T/F/U` across columns is the unit of information. Each vector also
+carries its `DELIVER`/`REJECT` verdict (a property of the vector, not the row).
+
+### Minimum-cost branch work order (`filter-work-order/v1`)
+
+`build_work_order` takes the vector frequency table (never `row_id` or row order) and
+independent positive per-atom fees, and solves the exact minimum expected batch cost
+with dynamic programming over partial assignments. A node stops as soon as every
+vector still consistent with the observed answers gives the same decision; `F` and
+`U` may share a `REJECT` leaf freely. Costs are weighted by the real row counts,
+equivalent branches share a memoised subtree, ties break on declared atom order, and
+no path ever requests the same atom twice.
+
+### Replay and cross-check
+
+`replay_work_order` walks the saved tree row by row through an `AtomOracle` that
+reveals one billed atom at a time and raises on any unrequested or repeated read;
+until the leaf decision the walker has no `row_id`, row order, or row-to-vector
+mapping. Afterwards it verifies: observed vectors match the joint statistics exactly,
+row identities trace to the statistics' groups, every decision matches the predicate,
+the summed cost equals the work-order optimum, and the delivered set is exact.
+`delivered_records` projects the original `reader-records/v1` snapshot so the real
+`reader_client.py` re-checks the delivered rows. A work order binds one
+`(reader_version, sealed file fingerprint, predicate fingerprint)` triple and refuses
+any other file or predicate.
+
+```bash
+PYTHONPATH=. python3.11 -m extcontract stats   W.json R.json BATCH.json PRED.json stats.json
+PYTHONPATH=. python3.11 -m extcontract workorder stats.json PRED.json R.json FEES.json order.json
+PYTHONPATH=. python3.11 -m extcontract replay   W.json R.json BATCH.json PRED.json \
+                                                order.json stats.json --delivered delivered.json
+python3.11 materials/745/reader_client.py R.json delivered.json
+```
+
+Mandated numbers, all asserted in `tests/test_workorder.py` and shown in
+`examples/run_filter_work_demo.py`:
+
+* `A AND B`, rows `TT TF FT FF`: fees `A=1,B=5` and `A=5,B=1` both total **14**; the
+  cheaper atom is tested first, so the root flips from A to B.
+* Revised rows `TT TT FF FF` with fees `A=1,B=5`: total **4**; every row is decided by
+  A alone and B is never billed.
+* `NOT(A OR B)` on nullable data: `FF` is true and delivered, while `UF` (and `FU`,
+  `UU`) stays unknown and is rejected — a two-valued engine could not separate them.
+
+The DP optimality is independently checked in the tests by brute-force enumeration of
+every decision tree on small instances. Envelope test (`tests/test_workorder_scale.py`):
+8 atoms × 5000 rows.
+
+---
+
 ## Templates for the mandated scenario
 
 `fixtures/bootstrap.json`, `fixtures/F-BAD.json`, `fixtures/F-NEW.json` are the
@@ -288,8 +365,13 @@ extcontract/
   compat.py     row-free whole-domain proof + adaptation plan + witnesses
   adapter.py    per-row validation + plan application -> reader-records/v1
   ingest.py     revision-aware, atomic, idempotent target state
-  cli.py        compat / adapt / ingest commands
-examples/run_745_demo.py   end-to-end scenario against the real client
-fixtures/                  bootstrap, F-BAD, F-NEW documents
-tests/                     compat, adapter, ingest, fixtures, scale
+  predicate.py  three-valued (T/F/U) atoms and Kleene AND/OR/NOT predicates
+  workorder.py  joint truth-vector statistics + exact minimum-cost work order DP
+  replay.py     pay-per-atom execution, no-peek oracle, delivery cross-check
+  cli.py        compat / adapt / ingest / stats / workorder / replay commands
+examples/run_745_demo.py             end-to-end scenario against the real client
+examples/run_filter_work_demo.py     billed filter work order scenario
+fixtures/                            bootstrap, F-BAD, F-NEW, filterwork/ docs
+tests/                               compat, adapter, ingest, fixtures, scale,
+                                     predicate, workorder, workorder scale
 ```

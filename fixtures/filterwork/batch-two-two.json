@@ -1,0 +1,11 @@
+{
+  "file_id": "batch-two-two",
+  "writer_version": "fw-w1",
+  "reader_version": "fw-r1",
+  "rows": [
+    {"row_id": "s1", "revision": 1, "values": {"x": 1, "y": 1}},
+    {"row_id": "s2", "revision": 1, "values": {"x": 1, "y": 1}},
+    {"row_id": "s3", "revision": 1, "values": {"x": 2, "y": 2}},
+    {"row_id": "s4", "revision": 1, "values": {"x": 2, "y": 2}}
+  ]
+}

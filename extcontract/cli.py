@@ -4,12 +4,20 @@
     python -m extcontract adapt  WRITER.json READER.json INPUT.json OUT.json
     python -m extcontract ingest WRITER.json READER.json FILE.json \
                                    [--state-dir DIR] [--publish OUT.json]
+    python -m extcontract stats   WRITER.json READER.json FILE.json PRED.json OUT.json
+    python -m extcontract workorder STATS.json PRED.json READER.json FEES.json OUT.json
+    python -m extcontract replay  WRITER.json READER.json FILE.json PRED.json \
+                                   WORKORDER.json STATS.json [--delivered OUT.json]
 
 ``compat`` prints a human-readable per-column verdict plus the public plan.
 ``adapt`` writes ``reader-records/v1`` (consumable by reader_client.py).
 ``ingest`` uses a small on-disk JSON state file so repeated invocations keep
 the atomic, revision-aware target state; ``--publish`` writes the current
 reader-records/v1 snapshot.
+
+``stats`` / ``workorder`` / ``replay`` drive the per-column billed filter
+flow: joint three-valued atom statistics, an exact minimum-cost branch work
+order, and its row-by-row replay with a full delivery cross-check.
 """
 
 from __future__ import annotations
@@ -23,7 +31,16 @@ from .adapter import adapt_file_document, write_records
 from .compat import check_compatibility
 from .contract import load_contract
 from .ingest import IngestionLibrary
-
+from .predicate import parse_predicate
+from .workorder import (
+    build_joint_statistics,
+    build_work_order,
+    parse_fees,
+    parse_statistics_document,
+    sealed_file_fingerprint,
+)
+from .replay import delivered_records, replay_work_order
+from .workorder import parse_work_order_document
 
 def _load_json(path: str):
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -194,6 +211,93 @@ def _state_from_library(library: IngestionLibrary) -> dict:
     return {"sequence": library._sequence, "rows": rows, "receipts": receipts}
 
 
+def _adapted_canonical_rows(writer, reader, doc):
+    """Adapt a sealed file document; fail the command unless ADAPTED."""
+    result = adapt_file_document(writer, reader, doc)
+    if result.status != "ADAPTED":
+        print(
+            json.dumps(result.to_json(), ensure_ascii=False, indent=2, sort_keys=True)
+        )
+        raise SystemExit(f"adaptation rejected: {result.status}")
+    return result
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    writer = load_contract(args.writer, role="writer")
+    reader = load_contract(args.reader, role="reader")
+    doc = _load_json(args.file)
+    predicate = parse_predicate(_load_json(args.predicate), reader)
+    result = _adapted_canonical_rows(writer, reader, doc)
+
+    fingerprint = sealed_file_fingerprint(
+        [
+            {"row_id": row.row_id, "values": row.domain_values}
+            for row in result.canonical_rows
+        ],
+        writer_version=writer.version,
+        reader_version=reader.version,
+    )
+    statistics = build_joint_statistics(
+        predicate,
+        result.canonical_rows,
+        reader_version=reader.version,
+        file_id=doc.get("file_id"),
+        file_fingerprint=fingerprint,
+    )
+    Path(args.output).write_text(
+        json.dumps(statistics.to_json(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        f"wrote joint statistics over {statistics.row_count} rows, "
+        f"{len(statistics.vectors)} observed vectors to {args.output}"
+    )
+    return 0
+
+
+def cmd_workorder(args: argparse.Namespace) -> int:
+    reader = load_contract(args.reader, role="reader")
+    predicate = parse_predicate(_load_json(args.predicate), reader)
+    statistics = parse_statistics_document(_load_json(args.stats))
+    fees = parse_fees(_load_json(args.fees), statistics.atom_ids)
+    work_order = build_work_order(statistics, predicate, fees)
+    Path(args.output).write_text(
+        json.dumps(work_order.to_json(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        f"wrote work order: total cost {work_order.total_cost} over "
+        f"{work_order.row_count} rows, {work_order.node_count} nodes to {args.output}"
+    )
+    return 0
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    writer = load_contract(args.writer, role="writer")
+    reader = load_contract(args.reader, role="reader")
+    doc = _load_json(args.file)
+    predicate = parse_predicate(_load_json(args.predicate), reader)
+    work_order, _ = parse_work_order_document(_load_json(args.workorder))
+    statistics = parse_statistics_document(_load_json(args.stats))
+    result = _adapted_canonical_rows(writer, reader, doc)
+
+    replay = replay_work_order(
+        work_order,
+        predicate,
+        result.canonical_rows,
+        statistics,
+        writer_version=writer.version,
+        reader_version=reader.version,
+    )
+    print(json.dumps(replay.to_json(), ensure_ascii=False, indent=2))
+    if not replay.cross_check["all_passed"]:
+        raise SystemExit("replay cross-check failed")
+    if args.delivered:
+        write_records(delivered_records(result.records, replay), args.delivered)
+        print(f"wrote {len(replay.delivered_row_ids)} delivered rows to {args.delivered}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="extcontract")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -218,6 +322,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest.add_argument("--state-dir", default=".extcontract-state")
     p_ingest.add_argument("--publish", default=None)
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_stats = sub.add_parser(
+        "stats", help="joint three-valued atom statistics over a sealed file"
+    )
+    p_stats.add_argument("writer")
+    p_stats.add_argument("reader")
+    p_stats.add_argument("file")
+    p_stats.add_argument("predicate")
+    p_stats.add_argument("output")
+    p_stats.set_defaults(func=cmd_stats)
+
+    p_work = sub.add_parser(
+        "workorder", help="minimum-cost branch work order from statistics + fees"
+    )
+    p_work.add_argument("stats")
+    p_work.add_argument("predicate")
+    p_work.add_argument("reader")
+    p_work.add_argument("fees")
+    p_work.add_argument("output")
+    p_work.set_defaults(func=cmd_workorder)
+
+    p_replay = sub.add_parser(
+        "replay", help="replay a saved work order and cross-check delivery"
+    )
+    p_replay.add_argument("writer")
+    p_replay.add_argument("reader")
+    p_replay.add_argument("file")
+    p_replay.add_argument("predicate")
+    p_replay.add_argument("workorder")
+    p_replay.add_argument("stats")
+    p_replay.add_argument("--delivered", default=None)
+    p_replay.set_defaults(func=cmd_replay)
     return parser
 
 

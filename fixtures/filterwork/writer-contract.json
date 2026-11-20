@@ -1,0 +1,17 @@
+{
+  "version": "fw-w1",
+  "fields": [
+    {
+      "field_id": "x",
+      "name": "x",
+      "type": {"kind": "INT", "bits": 8},
+      "nullable": true
+    },
+    {
+      "field_id": "y",
+      "name": "y",
+      "type": {"kind": "INT", "bits": 8},
+      "nullable": true
+    }
+  ]
+}

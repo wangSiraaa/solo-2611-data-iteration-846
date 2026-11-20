@@ -1,0 +1,12 @@
+{
+  "file_id": "batch-null",
+  "writer_version": "fw-w1",
+  "reader_version": "fw-r1",
+  "rows": [
+    {"row_id": "ff", "revision": 1, "values": {"x": 2, "y": 2}},
+    {"row_id": "uf", "revision": 1, "values": {"x": null, "y": 2}},
+    {"row_id": "fu", "revision": 1, "values": {"x": 2, "y": null}},
+    {"row_id": "uu", "revision": 1, "values": {"x": null, "y": null}},
+    {"row_id": "tt", "revision": 1, "values": {"x": 1, "y": 1}}
+  ]
+}

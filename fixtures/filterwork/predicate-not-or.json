@@ -1,0 +1,8 @@
+{
+  "predicate_id": "p-not-or-null",
+  "atoms": [
+    {"atom_id": "A", "field_id": "x", "op": "eq", "constant": 1},
+    {"atom_id": "B", "field_id": "y", "op": "eq", "constant": 1}
+  ],
+  "expression": {"not": {"or": ["A", "B"]}}
+}
